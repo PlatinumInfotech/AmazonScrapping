@@ -40,30 +40,29 @@ def scrape():
         except:
             price = "Not found"
 
-        # Extract the title (optional)
+        # Extract the title
         try:
             title = driver.find_element(By.ID, 'productTitle').text.strip()
         except:
             title = "Not found"
-            
-        # Extract Limited Time Deal
+
+        # Check for Limited Time Deal
         try:
-            LimitedDeal = driver.find_element(By.XPATH, '//span[@class="a-size-small dealBadgeTextColor a-text-bold"]').text.strip()
+            ltd_element = driver.find_element(By.XPATH, '//span[contains(@class,"dealBadgeTextColor")]')
+            limited_deal = "Yes" if ltd_element and "Limited time deal" in ltd_element.text else "No"
         except:
-            LimitedDeal = "Not found"
+            limited_deal = "No"
 
         driver.quit()
 
         return jsonify({
             "title": title,
             "price": price,
-            "Limited Time Deal":LimitedDeal
+            "Limited Time Deal": limited_deal
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    
 if __name__ == "__main__":
-    # Allow public access to the API (for EC2/n8n to call it)
     app.run(host="0.0.0.0", port=5000)
