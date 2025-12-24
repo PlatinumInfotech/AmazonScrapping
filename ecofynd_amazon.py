@@ -1,142 +1,153 @@
 from flask import Flask, request, jsonify
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
+from playwright.sync_api import sync_playwright, TimeoutError
 import re
 
 app = Flask(__name__)
+API_TOKEN = "your_secret_token_here"
+
+@app.before_request
+def check_auth():
+    if request.endpoint != "index":
+        token = request.headers.get("X-API-TOKEN")
+        if token != API_TOKEN:
+            return jsonify({"error": "Unauthorized"}), 401
 
 @app.route("/")
 def index():
-    return "✅ Ecofynd Amazon Scraper API is running!"
+    return "✅ Amazon Playwright Scraper is running!"
 
 @app.route("/scrape", methods=["POST"])
-def scrape():
+def scrape_single():
+    data = request.get_json()
+    url = data.get("url")
+    expected_asin = data.get("asin")
+
+    if not url or not expected_asin:
+        return jsonify({"error": "Missing 'url' or 'asin' in request body"}), 400
+
     try:
-        data = request.get_json()
-        url = data.get("url")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+            ))
+            page = context.new_page()
+            page.goto(url, timeout=60000)
 
-        if not url:
-            return jsonify({"error": "Missing 'url' in request body"}), 400
+            # --- Extract ASIN from page ---
+            page_content = page.content()
+            asin_match = re.search(r'"asin"\s*:\s*"([A-Z0-9]{10})"', page_content, re.IGNORECASE)
+            if not asin_match:
+                asin_match = re.search(r'/dp/([A-Z0-9]{10})', page.url, re.IGNORECASE)
 
-        # Set up headless Chrome
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920x1080')
+            if not asin_match:
+                return jsonify({"error": "Could not detect ASIN on page"}), 400
 
-        driver = webdriver.Chrome(options=chrome_options)
+            detected_asin = asin_match.group(1)
 
-        # Load the page
-        driver.get(url)
-        time.sleep(3)  # Wait for page to load (Amazon is JS-heavy)
+            if detected_asin.upper() != expected_asin.upper():
+                return jsonify({
+                    "error": "ASIN mismatch",
+                    "expected": expected_asin,
+                    "found": detected_asin
+                }), 409
 
-        # Extract the price
-        # try:
-        #     price = driver.find_element(By.XPATH, '(//span[@class="a-price-whole"])[1]').text
-        # except:
-        #     price = "Not found"
-    # First, check availability
-        try:
-            availability = driver.find_element(By.ID, "availability").text.strip()
-        except:
-            availability = ""
+            # -------------------------------
+            # Continue scraping ONLY if ASIN matches
+            # -------------------------------
 
-        if "Currently unavailable" in availability or "Out of stock" in availability:
-            price = "Currently unavailable"
-
-        # If available, extract price from common price locations
-        else:
+            # Bot bypass
             try:
-                price = driver.find_element(By.XPATH, '(//span[@class="a-price-whole"])[1]').text.strip()
+                button = page.locator("button:visible").first
+                if button.is_visible():
+                    button.click()
+                    page.wait_for_timeout(3000)
             except:
-                price =  "Price not found"
+                pass
 
-        # Extract the title
-        try:
-            title = driver.find_element(By.ID, 'productTitle').text.strip()
-        except:
-            title = "Not found"
-               
-        # Extract ratings  
-        try:
-            rating_element = driver.find_element(By.XPATH, "(//span[@id='acrPopover'])[1]")
-            rating = rating_element.get_attribute("title").strip()  # Example: "4.5 out of 5 stars"
-        except:
-            rating = "Not found"  
+            for y in range(0, 2000, 400):
+                page.mouse.wheel(0, y)
+                page.wait_for_timeout(300)
 
-        # ⭐ Extract Review Count (NEW)
-        try:
-            review_count_el = driver.find_element(By.ID, "acrCustomerReviewText")
-            review_text = review_count_el.text.strip()            # e.g. "1,234 ratings"
-            review_count = re.sub(r"[^\d]", "", review_text)
-        except:
-            review_count = "Not found"
-
-        # Check for Limited Time Deal
-        try:
-            ltd_element = driver.find_element(By.XPATH, '//span[contains(@class,"dealBadgeTextColor")]').text
-            limited_deal = "Yes" if ltd_element and "Limited time deal" in ltd_element.text else "No"
-        except:
-            limited_deal = "Not found"
-        
-        # Bullet points 
-        try:
-            bullet_elements = driver.find_elements(By.XPATH, "//div[@id='feature-bullets']//span[@class='a-list-item']")
-            bullet_points = len([b.text.strip() for b in bullet_elements if b.text.strip()])
-        except:
-            bullet_points = []     
-            
-        # Best Sellers Rank
-        try:
-            bsr_elements = driver.find_elements(By.XPATH, '//ul[contains(@class, "a-unordered-list") and contains(@class, "a-nostyle")]/li')
-            bsr_ranks = [el.text.strip() for el in bsr_elements if "#" in el.text]
-        except:
-            bsr_ranks = []
-           
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(3)                  
-
-        #  A Plus Content   
-        try:
-            aplus_section = driver.find_element(By.XPATH, '//div[@id="aplus"]')
-            aplus_content = aplus_section.text.strip()
-            aplus_present = "Yes" if aplus_content else "No"
-        except:
-            aplus_present = "No"
-
-        # Seller name 
-        try:
-            seller_element = driver.find_element(By.XPATH, '//a[@id="sellerProfileTriggerId"]')
-            seller_name = seller_element.text.strip()
-        except:
             try:
-                # Fallback for 'Sold by' section in offer info
-                seller_element = driver.find_element(By.XPATH, '//div[@id="merchant-info"]')
-                seller_name = seller_element.text.strip()
+                title = page.locator("#productTitle").first.text_content().strip()
             except:
-                seller_name = ""
+                title = "Not found"
 
-        driver.quit()
+            price = "Not found"
+            for sel in [".a-price .a-offscreen", "#priceblock_ourprice", "#priceblock_dealprice"]:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible():
+                        price = el.inner_text().strip()
+                        break
+                except:
+                    continue
 
-        return jsonify({
-            "Title": title,
-            "Seller Name": seller_name,
-            "Price": price,
-            "Rating": rating,
-            "Deal Tag": limited_deal,
-            "Bullet Points": bullet_points,
-            "Best Sellers Rank": bsr_ranks,
-            "A Plus Content": aplus_present,
-            "Review Count": review_count                         
-        })
+            try:
+                badge = page.locator("span.dealBadgeTextColor, span.dealBadgeText").first
+                limited_deal = badge.inner_text().strip() if badge.is_visible() else "Not found"
+            except:
+                limited_deal = "Not found"
 
+            try:
+                rating = page.locator("span.a-icon-alt").first.inner_text().strip()
+            except:
+                rating = "Not found"
+
+            try:
+                detail_section = page.locator("#productDetails_detailBullets_sections1, #prodDetails, #detailBulletsWrapper_feature_div").first
+                text = detail_section.inner_text()
+                ranks = re.findall(r"#\d[\d,]*\s+in\s+[^\n()]+", text)
+                best_seller_rank = ranks if ranks else ["Not found"]
+            except:
+                best_seller_rank = ["Not found"]
+
+            try:
+                aplus_content = "Yes" if page.locator("div.aplus-v2.desktop, div.aplus, div#aplus").first.is_visible() else "No"
+            except:
+                aplus_content = "No"
+
+            try:
+                bullet_count = page.locator("#feature-bullets ul li").count()
+            except:
+                bullet_count = 0
+
+            try:
+                deal_element = page.locator("span.a-size-mini.a-color-base").filter(has_text="Deal")
+                deal_tag = deal_element.first.inner_text().strip() if deal_element.count() > 0 else "Not found"
+            except:
+                deal_tag = "Not found"
+
+            try:
+                seller_name = page.locator("#sellerProfileTriggerId").first.inner_text().strip()
+            except:
+                seller_name = "Not found"
+
+            try:
+                review_text = page.locator('#acrCustomerReviewText, span[data-ux="review-count"]').first.text_content().strip()
+            except:
+                review_text = "Not found"
+
+            browser.close()
+
+            return jsonify({
+                "ASIN": detected_asin,
+                "Title": title,
+                "Price": price,
+                "Limited Time Deal": limited_deal,
+                "Rating": rating,
+                "Best Sellers Rank": best_seller_rank,
+                "A Plus Content": aplus_content,
+                "Bullet Points": bullet_count,
+                "Deal Tag": deal_tag,
+                "Seller Name": seller_name,
+                "Review Count": review_text
+            })
+
+    except TimeoutError:
+        return jsonify({"error": "Timeout while loading page"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
