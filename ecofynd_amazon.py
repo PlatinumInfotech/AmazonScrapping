@@ -53,10 +53,6 @@ def scrape_single():
                     "found": detected_asin
                 }), 409
 
-            # -------------------------------
-            # Continue scraping ONLY if ASIN matches
-            # -------------------------------
-
             # Bot bypass
             try:
                 button = page.locator("button:visible").first
@@ -91,8 +87,31 @@ def scrape_single():
             except:
                 limited_deal = "Not found"
 
+            # try:
+            #     rating = page.locator("span.a-icon-alt").first.inner_text().strip()
+            # except:
+            #     rating = "Not found"
+
+            # --- RATING (SAFE & AMAZON-PROOF) ---
+            rating = None
+
             try:
-                rating = page.locator("span.a-icon-alt").first.inner_text().strip()
+                # wait briefly for lazy-loaded rating
+                page.wait_for_selector("span.a-icon-alt", timeout=5000)
+            except:
+                pass
+
+            try:
+                rating_elements = page.locator("span.a-icon-alt")
+                total = rating_elements.count()
+
+                for i in range(total):
+                    text = rating_elements.nth(i).inner_text().strip().lower()
+
+                    # valid rating format: "4.3 out of 5 stars"
+                    if "out of" in text and "star" in text:
+                        rating = text.split(" ")[0]
+                        break
             except:
                 rating = "Not found"
 
