@@ -130,13 +130,6 @@ async def scrape_amazon(request: Request):
                 rating = text.split(" ")[0]
                 break
 
-        # # 5. Best Sellers Rank (Regex)
-        # details_text = ""
-        # detail_section = soup.select_one("#productDetails_detailBullets_sections1, #prodDetails, #detailBulletsWrapper_feature_div")
-        # if detail_section:
-        #     details_text = detail_section.get_text()
-        # ranks = re.findall(r"#\d[\d,]*\s+in\s+[^\n()]+", details_text)
-        # best_seller_rank = ranks if ranks else ["Not found"]
 
         # --- DETAIL SECTION PROCESSING (Rank & Contact Info) ---
         detail_section = soup.select_one("#productDetails_detailBullets_sections1, #prodDetails, #detailBulletsWrapper_feature_div, #productDetails_techSpec_section_1")
@@ -149,71 +142,146 @@ async def scrape_amazon(request: Request):
         ranks = [re.split(r'\s{2,}|Date|Manufacturer|Packer', r)[0].strip() for r in ranks_found]
 
         # 6. Additional Fields
+        # badge = soup.select_one("span.dealBadgeTextColor, span.dealBadgeText")
+        
+        # --- 6. Badges & Coupon Extraction ---
         badge = soup.select_one("span.dealBadgeTextColor, span.dealBadgeText")
-        seller = soup.select_one("#sellerProfileTriggerId")
+        limited_time_deal = badge.get_text(strip=True) if badge else "Not found"
+
+        deal_tag_el = soup.select_one("span.a-size-mini.a-color-base")
+        deal_tag = deal_tag_el.get_text(strip=True) if deal_tag_el and "Deal" in deal_tag_el.text else "Not found"
+        
+        # Coupon Extraction
+        coupon_text = "Not found"
+        
+        # Selector 1: Check using the class from your snippet
+        coupon_el = soup.select_one(".couponLabelText, #couponTextFeature_feature_div")
+        
+        if coupon_el:
+            # Get text and clean out internal "Terms" link text if present
+            raw_coupon = coupon_el.get_text(" ", strip=True)
+            
+            # Clean trailing terms/links cleanly
+            coupon_text = re.sub(r'\s*(Terms|\|).*$', '', raw_coupon, flags=re.IGNORECASE).strip()  
+            
+        else:
+            # Selector 2: Fallback for applied state or other Amazon layout variations
+            fallback_coupon = soup.select_one("i.newCouponBadge, .promoPriceBlockMessage, span[id*='couponText']")
+            if fallback_coupon:
+                # Find parent container text
+                parent = fallback_coupon.find_parent("div") or fallback_coupon.parent
+                if parent:
+                    text = parent.get_text(" ", strip=True)
+                    # Extract string like "Apply 2% coupon" or "2% off coupon"
+                    match = re.search(r'(Apply\s+[\d%₹\$\s\w]+coupon|[\d%₹\$]+ off coupon)', text, re.IGNORECASE)
+                    if match:
+                        coupon_text = match.group(1).strip()
+                        
+        # Determine the single primary offer
+        offer = "Not found"
+        if coupon_text != "Not found":
+            offer = coupon_text
+        elif limited_time_deal != "Not found":
+            offer = limited_time_deal
+        elif deal_tag != "Not found":
+            offer = deal_tag                        
+
+        # seller = soup.select_one("#sellerProfileTriggerId")
+        
+        seller = "Not found"
+
+        try:
+            # 1. Primary
+            seller_tag = soup.select_one("#sellerProfileTriggerId")
+            if seller_tag:
+                seller = seller_tag.get_text(strip=True)
+
+            # 2. Merchant info
+            if seller == "Not found":
+                merchant = soup.select_one("#merchant-info")
+                if merchant:
+                    text = merchant.get_text(" ", strip=True)
+
+                    match = re.search(r"Sold by\s+(.*?)(?:\s{2,}|$)", text)
+                    if match:
+                        seller = match.group(1)
+
+            # 3. Fallback
+            if seller == "Not found":
+                texts = soup.find_all(string=lambda t: t and "Sold by" in t)
+                for t in texts:
+                    match = re.search(r"Sold by\s+(.*)", t)
+                    if match:
+                        seller = match.group(1)
+                        break
+
+        except Exception as e:
+            print("Seller extraction error:", str(e))
+        
         reviews = soup.select_one('#acrCustomerReviewText, span[data-ux="review-count"]')
         aplus = "Yes" if soup.select_one("div.aplus-v2.desktop, div.aplus, div#aplus") else "No"
         bullets = len(soup.select("#feature-bullets ul li"))
-        deal_tag = soup.select_one("span.a-size-mini.a-color-base") # Simplified deal check
         
-        manufacturer = None
-        manufacturer_contact = None
-        packer_contact = None
-        packer_contact_info = None
-        importer_contact = None
-        importer_contact_info = None
+        # manufacturer = None
+        # manufacturer_contact = None
+        # packer_contact = None
+        # packer_contact_info = None
+        # importer_contact = None
+        # importer_contact_info = None
 
-        if detail_section:
-            rows = detail_section.select("tr")
+        # if detail_section:
+        #     rows = detail_section.select("tr")
 
-            for row in rows:
-                header = row.find("th")
-                value = row.find("td")
+        #     for row in rows:
+        #         header = row.find("th")
+        #         value = row.find("td")
 
-                if not header or not value:
-                    continue
+        #         if not header or not value:
+        #             continue
 
-                key = clean_text(header.get_text(strip=True)).lower()
-                val = clean_text(value.get_text(strip=True))
+        #         key = clean_text(header.get_text(strip=True)).lower()
+        #         val = clean_text(value.get_text(strip=True))
 
-                if "manufacturer contact" in key:
-                    manufacturer_contact = val
+        #         if "manufacturer contact" in key:
+        #             manufacturer_contact = val
 
-                elif key == "manufacturer":
-                    manufacturer = val
+        #         elif key == "manufacturer":
+        #             manufacturer = val
 
-                elif "packer contact" in key:
-                    packer_contact_info = val
+        #         elif "packer contact" in key:
+        #             packer_contact_info = val
 
-                elif key == "packer":
-                    packer_contact = val
+        #         elif key == "packer":
+        #             packer_contact = val
 
-                elif "importer contact" in key:
-                    importer_contact_info = val
+        #         elif "importer contact" in key:
+        #             importer_contact_info = val
 
-                elif key == "importer":
-                    importer_contact = val        
+        #         elif key == "importer":
+        #             importer_contact = val        
 
         return {
             "ASIN": detected_asin,
             "Title": title,
             "Availability": availability,
             "Price": price,
-            "Limited Time Deal": badge.get_text(strip=True) if badge else "Not found",
+            "Offer": offer,  # <--- Single combined field (e.g., "Apply 2% coupon" or "Limited time deal")
             "Rating": rating,
             "Best Sellers Rank": ranks if ranks else ["Not found"],
             "A Plus Content": aplus,
             "Bullet Points": bullets,
-            "Deal Tag": deal_tag.get_text(strip=True) if deal_tag and "Deal" in deal_tag.text else "Not found",
-            "Manufacturer": manufacturer or "Not found",
-            "Manufacturer Contact": manufacturer_contact or "Not found",
-            "Packer Contact": packer_contact or "Not found",
-            "Packer Contact Info": packer_contact_info,
-            "Importer Contact": importer_contact or "Not found",  
-            "Importer Contact Info": importer_contact_info,     
-            "Seller Name": seller.get_text(strip=True) if seller else "Not found",
+            "Seller Name": seller if seller else "Not found",
             "Review Count": reviews.get_text(strip=True) if reviews else "Not found",
+            "Limited Time Deal": limited_time_deal,
             "Status": "success"
+            # "Coupon": coupon_text,
+            # "Deal Tag": deal_tag.get_text(strip=True) if deal_tag and "Deal" in deal_tag.text else "Not found",
+            # "Manufacturer": manufacturer or "Not found",
+            # "Manufacturer Contact": manufacturer_contact or "Not found",
+            # "Packer Contact": packer_contact or "Not found",
+            # "Packer Contact Info": packer_contact_info,
+            # "Importer Contact": importer_contact or "Not found",  
+            # "Importer Contact Info": importer_contact_info,     
         }
 
 if __name__ == "__main__":
