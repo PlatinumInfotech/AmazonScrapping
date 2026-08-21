@@ -12,15 +12,18 @@ API_TOKEN = "your_secret_token_here"
 
 
 def extract_asin(html, url):
-    # URL is more reliable – check it first
-    url_match = re.search(r'/dp/([A-Z0-9]{10})', url, re.IGNORECASE)
-    if url_match:
-        return url_match.group(1).upper()
-    # Fall back to embedded JSON in page source
+    # Check page HTML first – this reflects the actual ASIN rendered after any
+    # Amazon redirect (the `url` variable is always the original requested URL,
+    # so checking URL first would miss redirects to a different ASIN entirely).
     content_match = re.search(r'"asin"\s*:\s*"([A-Z0-9]{10})"', html, re.IGNORECASE)
     if content_match:
         return content_match.group(1).upper()
+    # Fallback to URL only if the page has no embedded ASIN JSON
+    url_match = re.search(r'/dp/([A-Z0-9]{10})', url, re.IGNORECASE)
+    if url_match:
+        return url_match.group(1).upper()
     return None
+
 
 
 @app.post("/crawl")
